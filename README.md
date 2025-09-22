@@ -1,290 +1,125 @@
+# Reto  — Escenas de playground con **MP-GCN** 
 
-# Reto: Conductas en Playground con Esqueletos 
+## 1) ¿Qué vamos a construir?
 
-## 📌 Descripción
+Un clasificador **single-label por ventana (3–5 s)** que decide entre escenas:
+`Transit`, `Social_People`, `Play_Object_Normal`, `Play_Object_Risk`, `Adult_Assisting`, `Negative_Contact`.
 
-Construir un sistema que, a partir de **ventanas de video (3–5 s)** y **esqueletos 2D**, prediga **etiquetas multi-etiqueta** a nivel de **escena** en un playground:
-
-* **Riesgo de uso:** `wrong_way_climbing`, `blocking_slide_exit`, `falling`
-* **Interacción peligrosa:** `pushing_collision`, `adult_child_aggressive`
-* **Social positiva:** `cooperative_play`, `adult_assisting`
-* **Base:** `normal_play`
-
-**Modelo core (obligatorio):** encoder temporal por persona → **agregador por atención** (set de personas) → **cabeza multi-label**.
-**Stretch (opcional):** integrar **MP-GCN** (grafo panorámico) o añadir nodos de **objetos** (tobogán/columpio/estructura).
+**Por qué así:** con esqueletos 2D + nodos de objetos (columpios/lomas) es **ligero**, **privado** y captura **interacciones** (persona↔persona y persona↔objeto) que son justo las que importan para **riesgo** y **uso del equipamiento**.
 
 ---
 
-## 🧭 Estructura sugerida del repo
+## 2) Modelo base: **MP-GCN** (qué es y por qué)
 
-```
-project/
-  README.md
-  notebooks/
-    00_query_roi_and_azure.ipynb   # detecciones→ROI→Azure, descarga/listado
-    01_make_windows.ipynb          # generar windows.csv (opcional si ya lo haces en 00)
-    02_vlm_pseudolabels.ipynb      # auto-etiquetado (opcional)
-  data/
-    windows.csv                    # ventanas (t_start–t_end + blob_url_sas)
-    train.csv                      # etiquetas (humanas o pseudo) + conf_weight
-    val.csv
-    npy/                           # una .npy por ventana [T,K_max,V,C]
-  src/
-    data/                          # loaders [T,K_max,V,C] + máscara
-    model/                         # PersonEncoder, SceneAggregator, Head
-    train/                         # loop de entrenamiento
-    eval/                          # métricas
-    vlm/                           # agregador JSON→CSV (CORE-CLEAN)
-  configs/
-    classes.yaml                   # minimal5 / full8
-```
+**MP-GCN** representa cada ventana como **grafo espacio-temporal**:
 
-> Puedes empezar **solo** con `notebooks/00_query_roi_and_azure.ipynb` (ya incluido en tu repo): produce `windows.csv` y descarga clips desde Azure.
+* **Nodos:** joints humanos + **centroides** de objetos del playground (estáticos por cámara).
+* **Aristas:**
+  *Intra* (topología esqueleto), *Persona↔Objeto* (obj↔manos), *Inter-persona* (pelvis↔pelvis).
+* **Cuatro “streams”** de entrada (como el paper): `J` (joints), `B` (bones), `JM=ΔJ`, `BM=ΔB`.
+* **Entrada típica por muestra:** `X ∈ [C, T, V', M]`
+  (`T`=frames, `V'`=17+j\_objetos, `M`=K\_max personas, `C`=canales).
+
+**Ventaja clave:** el grafo **codifica relaciones** (contacto, bloqueo, crowding) *dentro* del backbone, sin heurísticas.
+
+**Referencia oficial:**
+Repo: `https://github.com/mgiant/MP-GCN` (ECCV’24) · Paper: arXiv:2407.19497
 
 ---
 
-## 🔐 Configuración (credenciales)
+## 3) Estrategia general (por qué en este orden)
 
-**No** subas contraseñas ni SAS al repo. Usa variables de entorno o un `config.json` ignorado en git.
-
-Variables típicas:
-
-```bash
-# PostGIS
-export POSTGIS_DB=crowdcounting
-export POSTGIS_USER=...
-export POSTGIS_PASS=...
-export POSTGIS_HOST=...
-export POSTGIS_PORT=5432
-
-# Azure Blob (SAS solo lectura+lista)
-export AZ_ACCOUNT_URL="https://<account>.blob.core.windows.net"
-export AZ_CONTAINER="<container>"
-export AZ_SAS="sv=...&sp=rl&sig=..."   # sp=rl (Read+List)
-```
+1. **Replicar** en dataset público (Volleyball / NBA; opcional Kinetics-400) → entiendes **feeder** y **streams** sin ruido.
+2. **Preparar nuestro dato** (ROI→ventanas, esqueletos, objetos) → construyes el **input panorámico**.
+3. **Etiquetar simple** (VLM que ya está desplegado **o** curado ligero) → obtienes supervisión inicial.
+4. **Fine-tuning ligero** + **ablation mínima** → demuestras valor del grafo **persona-objeto**.
 
 ---
 
-## 🧱 Dependencias mínimas
+## 4) Plan de 10 semanas (resumido y flexible)
 
-```text
-pandas
-numpy
-geopandas
-psycopg2-binary
-shapely
-azure-storage-blob
-tqdm
-# Entrenamiento:
-torch
-scikit-learn
-pyyaml
-matplotlib
-```
+**S1 — Intro + setup + “hello world”**
 
----
+* Leer la idea de MP-GCN (nodos/aristas/streams).
+* Clonar repo y correr **inferencias/entrenamiento corto** en Volleyball/NBA (o preparar K400).
 
-## 🗃️ Datos de entrada
+**S2 — Réplica pública con métricas**
 
-* **PostGIS** con detecciones **ya filtradas por ROI** (área de juegos).
-  Tabla ejemplo:
-  `person_observed(id, id_person, lat, long, timestamp, geom, camera_name, coordinate_x, coordinate_y, tracklet_id, ...)`
+* Entreno breve, ver **Top-1** y **matriz de confusión**.
+* Entender shapes del *feeder* (`[C,T,V',M]`).
 
-* **Azure Blob Storage** con los videos (container + **SAS de lectura**).
+**S3 — Ventanas (Playground, ROI)**
 
----
+* 5 s (hop 2.5 s) → `windows.csv` con `video_id,camera,t_start,t_end,blob_url`.
+* Muestra visual de 20 ventanas.
 
-## 🚦 Pipeline reproducible
+**S4 — Esqueletos + tracking (subset)**
 
-### 1) De detecciones a **segmentos con presencia** (ROI)
+* Pose ligera (YOLO/RTM-pose) + ByteTrack/DeepSORT en **400–800** ventanas.
+* Normalizar por persona (cadera al origen, escala por torso).
+* Guardar **`[T,K_max,17,2]`** (sugerido **T=48**, **K\_max=4**, **FPS=12**).
 
-En `00_query_roi_and_azure.ipynb`:
+**S5 — Objetos por cámara (manual, rápido)**
 
-1. Carga ROI (`playgroundROI.gpkg`, EPSG:4326).
-2. Consulta PostGIS → detecciones **dentro** del ROI + *timestamps*.
-3. **Colapsa por segundo** (`timestamp.floor('S')`), cuenta personas (`nunique(tracklet_id)`).
-4. Mantén segundos con `persons ≥ 1`.
-5. Une segundos contiguos en **segmentos** `[seg_start, seg_end)` (suma +1s al final).
-6. Descarta segmentos cortos `< 3 s`.
+* YAML con **centroides normalizados (0..1)** de columpios/lomas visibles.
+* (Son nodos estáticos; se replican en todos los frames).
 
-> Esto puede hacerse con SQL (CTEs) o Pandas (ver notebook).
+**S6 — Builder panorámico (entrada a MP-GCN)**
 
-### 2) Segmentos → **ventanas deslizantes** → `windows.csv`
+* Expandir `V → V' = 17 + n_obj`.
+* Añadir aristas: **obj↔manos** (intra), **pelvis↔pelvis** (inter).
+* Generar `J/B/JM/BM` y matrices **A0/A\_intra/A\_inter**.
+* Probar un **forward** con el *feeder* del repo.
 
-Dentro de cada segmento:
+**S7 — Etiquetado single-label (rápido)**
 
-* Ventana `W = 5 s` (o `3 s`) con **hop** `= 2.5 s` (50%).
-* **Salida:** `data/windows.csv` con columnas:
+* **Opción A (recomendada):** VLM → scores por clase → **argmax**; guardar `conf_weight = score_max` y filtrar CORE-CLEAN (p. ej., score ≥ 0.8).
+* **Opción B:** curado humano ligero (80–120 ventanas por clase clave).
 
-```csv
-video_id,camera,t_start,t_end,blob_url_sas
-C01_2025_09_10_120000,cam1,2025-09-10T12:00:00Z,2025-09-10T12:00:05Z,https://<acc>.blob.core.windows.net/<cont>/<path>.mp4?<SAS>
-```
+**S8 — Fine-tuning ligero (Playground)**
 
-> `blob_url_sas` se arma con `AZ_ACCOUNT_URL`, `AZ_CONTAINER`, `blob_path` y `AZ_SAS`.
+* Congelar gran parte del backbone; entrenar **cabeza** (+1–2 bloques si hay tiempo).
+* Loss CE con **class-weights**. Métricas iniciales.
 
-### 3) Ventanas → **esqueletos** `.npy`
+**S9 — Ajustes + ablation mínima**
 
-Para cada ventana (`t_start–t_end`):
+* Comparar: **sin objetos** / **sin inter-persona** / **panorámico completo**.
+* Reportar mejora en `Play_Object_Risk` y `Negative_Contact`.
 
-* Extrae **T frames** uniformes (p.ej., `T=64–96`).
-* Usa `K_max = 4–6` (máx. personas por ventana), `V=17` (COCO-17), `C=2` (x,y) o `3` (x,y,score).
-* **Padding** con ceros para personas ausentes; el loader infiere **máscara**.
-* **Normalización:** *root-centered* (cadera al origen) + *scale-invariant* (altura/torso).
-* Guarda **una** `.npy` por ventana: **`[T, K_max, V, C]`** (float32).
+**S10 — Demo + reporte**
 
-> Si ya tienes pose/track por frame, **reúsalos**; si no, usa un pose ligero (YOLOv8-pose, RTM/ViTPose-lite) y track *light*.
-
-### 4) (Opcional) Auto-etiquetado con VLM → **CORE-CLEAN**
-
-Si no hay labels humanas:
-
-1. Pasa ventanas a un **VLM** (2 vistas: RGB y *stick-figure*; 2 offsets).
-2. Pide **JSON estricto** con probabilidades \[0..1] por etiqueta.
-3. Ensemblado (promedio) + **CORE-CLEAN** (alta confianza/baja varianza).
-4. Genera `data/train.csv` y `data/val.csv`:
-
-```csv
-npy_path,wrong_way_climbing,blocking_slide_exit,falling,pushing_collision,adult_child_aggressive,cooperative_play,adult_assisting,normal_play,conf_weight
-data/npy/clip_0001.npy,0,0,1,0,0,0,0,0,0.95
-```
-
-**Prompt sugerido (multi-label, JSON estricto):**
-
-```text
-[SYSTEM] Responde SOLO con un JSON válido.
-[USER]
-Analiza el clip. Devuelve {"scores":{etiqueta:prob,...}} con probabilidades [0..1] para:
-["wrong_way_climbing","blocking_slide_exit","falling",
- "pushing_collision","adult_child_aggressive",
- "cooperative_play","adult_assisting","normal_play"]
-
-Reglas:
-- Si no hay tobogán visible: wrong_way_climbing y blocking_slide_exit ≤ 0.05.
-- Si es dudoso: usa 0.0–0.2 (no inventes).
-- No texto extra fuera del JSON.
-```
-
-### 5) Entrenamiento (Core)
-
-**Arquitectura:**
-
-* `PersonEncoder` (TemporalConv/LSTM pequeña) → `z_i ∈ R^d` por persona.
-* `SceneAggregator` (attention pooling o DeepSets con máscara) → `z_scene`.
-* `Head` (MLP multi-label) → logits → sigmoid.
-
-**Pérdida:** `BCEWithLogits` + *class-weights* (clases raras ↑) + `sample_weight=conf_weight`.
-**Hipers sugeridos:** `d=128`, `heads=4`, `layers=2`, `T=64`, `K_max=4–6`, batch `8–16`, LR `1e-3 → 1e-4`, dropout `0.1`.
-**Métricas:** mAP, F1 macro; **Recall** en `falling`/`adult_child_aggressive`; **FPR ≤ 5%** en clases de riesgo.
-**Calibración:** umbrales por clase (val) + **suavizado temporal** (EMA) para ventanas solapadas.
-
-### 6) Stretch (opcional)
-
-* **Objetos**: añadir centroides de `slide/swing` como “personas especiales” (ocupan slots en `K_max`).
-* **MP-GCN**: migrar al *panoramic graph* (streams J/B/JM/BM + atención persona-tiempo).
-* **Few-shot**: 50–100 ventanas por clase rara.
-* **Auto-training**: re-entrenar la **head** con predicciones ≥ 0.90 no vistas.
+* Streamlit sencillo: video + sticks + nodos + etiqueta y confianza por ventana.
+* Reporte breve: qué funciona y por qué; límites y siguiente paso.
 
 ---
 
-## 🧩 Ontologías
+## 5) Parámetros por defecto (para no atascarse)
 
-`configs/classes.yaml` sugerido:
-
-```yaml
-full8:
-  - wrong_way_climbing
-  - blocking_slide_exit
-  - falling
-  - pushing_collision
-  - adult_child_aggressive
-  - cooperative_play
-  - adult_assisting
-  - normal_play
-
-minimal5:
-  - falling
-  - wrong_way_climbing
-  - pushing_collision
-  - cooperative_play
-  - normal_play
-```
+* Cámaras: **2** (una de columpios, una de lomas).
+* Ventana: **5 s**, **FPS de proceso = 12** ⇒ `T_raw≈60` → muestrear a **T=48**.
+* `K_max=4`.
+* Clases: 4–6 (las de arriba).
+* Entrenamiento: **head-only** primero.
 
 ---
 
-## ⚒️ Comandos útiles (Azure / AzCopy)
+## 6) Entregables mínimos
 
-```bash
-# Listar blobs
-azcopy ls "$AZ_ACCOUNT_URL/$AZ_CONTAINER?$AZ_SAS"
-
-# Descargar un prefijo
-azcopy copy "$AZ_ACCOUNT_URL/$AZ_CONTAINER/playground/2025/*?$AZ_SAS" ./videos/ --recursive=true
-
-# Sincronizar (reanudar descargas)
-azcopy sync "$AZ_ACCOUNT_URL/$AZ_CONTAINER/playground/2025/?$AZ_SAS" ./videos/ --recursive=true
-```
+* **Réplica pública:** notebook + métricas.
+* `windows.csv` (Playground).
+* `.npy/.npz` por ventana (`[T,K_max,17,2]` normalizados).
+* `objects.yaml` (centroides por cámara).
+* **Builder** panorámico (4 streams + A) con *forward* exitoso.
+* `train.csv`/`val.csv` (VLM o curado).
+* Checkpoint + **ablation mínima**.
+* Demo (Streamlit) + reporte corto.
 
 ---
 
-## 🗓️ Calendario (10 semanas, guía)
+## 7) Notas rápidas
 
-1. **Exploración & datos** (ROI→detecciones→segmentos).
-2. **Ventanas** (`windows.csv`) y set-up de `.npy`.
-3. **PersonEncoder + Aggregator + Head** (forward OK).
-4. **VLM pseudo-labels → CORE-CLEAN** → `train/val.csv`.
-5. **Entrenamiento baseline** + reporte preliminar.
-6. **Calibración + suavizado**.
-7. **Stretch:** objetos o **MP-GCN** (si hay tiempo).
-8. **Few-shot** (opcional).
-9. **Robustez & ablations** (por cámara, #personas; J vs J+B+JM+BM; con/sin objetos).
-10. **Demo final** (Streamlit) + curvas PR/ROC + reporte.
+* El **VLM** sólo se usa para **generar etiquetas** (offline). El modelo final **NO** usa RGB: **sólo esqueletos + objetos**.
+* Si el tracking es ruidoso: baja `K_max` a 3–4 y descarta ventanas con <70% de keypoints válidos.
+* Si falta tiempo para objetos: empieza con **columpios** (asientos) y agrega lomas después.
 
----
-
-## 🎯 Metas y rúbrica (sugeridas)
-
-* **Semana 5:** F1 macro ≥ **0.45** (val).
-* **Semana 8:** Recall `falling` ≥ **0.60** con **FPR ≤ 5%** (riesgos).
-* **Semana 10:** demo fluida, **curvas PR/ROC**, ablations mínimas y discusión de limitaciones.
-
-**Rúbrica:**
-
-* Infra & datos (20%) — loaders reproducibles, normalización, notebook de exploración.
-* Baseline & training (35%) — entrenamiento estable, métricas razonables, manejo de desbalance.
-* Calibración & evaluación (25%) — umbrales por clase, FPR bajo, splits por cámara.
-* Demo & reporte (20%) — app clara, visualizaciones, ablations y futuro.
-
----
-
-## 🔗 Referencias
-
-* **MP-GCN (Panoramic Graph):**
-  Paper: *Skeleton-based Group Activity Recognition via Spatial-Temporal Panoramic Graph* (arXiv:2407.19497)
-  Repo: [https://github.com/mgiant/MP-GCN](https://github.com/mgiant/MP-GCN)
-
-* **ST-GCN (clásico) y variantes:** para quien quiera profundizar en GCN de esqueletos.
-
----
-
-## ❓FAQ
-
-**¿Sin etiquetas humanas?**
-Usa VLM → **CORE-CLEAN** para generar `train.csv` con `conf_weight`.
-
-**¿GPU pequeña?**
-`T=64`, `K_max=4`, `d=128`, batch `8–12`, ontología `minimal5`.
-
-**¿Puedo aprobar sin objetos ni grafo?**
-Sí. El **Core** (encoder por persona + agregador + head) es suficiente; el grafo es **stretch**.
-
----
-
-> **Checklist día 1–2**
->
-> 1. Ejecuta `00_query_roi_and_azure.ipynb` y genera **segmentos** → **ventanas** → `windows.csv`.
-> 2. Crea `.npy` por ventana (`[T,K_max,V,C]`) normalizados.
-> 3. (Opcional) VLM → CORE-CLEAN → `train/val.csv`.
-> 4. Entrena el **baseline** (5–8 épocas) y reporta F1/Recall/FPR.
-
----
+> Meta didáctica: entender **por qué** el grafo **persona-objeto** mejora la detección de **riesgo** e **interacción social**, y dejar un pipeline **reproducible** que puedan extender.
