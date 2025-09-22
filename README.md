@@ -5,7 +5,7 @@
 Clasificar **una etiqueta por escena** en escenas de playground (`Transit`, `Social_People`, `Play_Object_Normal`, `Play_Object_Risk`, `Adult_Assisting`, `Negative_Contact`) usando **esqueletos 2D** y un **grafo panorámico** persona–objeto (**MP-GCN**).
 MP-GCN modela **interacciones**: *intra-persona* (topología del cuerpo), *persona↔objeto* (manos↔columpio/lomas) y *inter-persona* (pelvis↔pelvis). Es **ligero**, **privado** y capta mejor **riesgo/uso del mobiliario** que un modelo por-persona con atención.
 
-**Repo de referencia:** `https://github.com/mgiant/MP-GCN` (ECCV’24, arXiv:2407.19497)
+**Repo de referencia:** [MP-GCN](https://github.com/mgiant/MP-GCN) (ECCV’24, arXiv:2407.19497)
 
 ---
 
