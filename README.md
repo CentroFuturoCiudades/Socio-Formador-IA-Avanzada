@@ -1,125 +1,87 @@
-# Reto  — Escenas de playground con **MP-GCN** 
+# Reto — Escenas de playground usando **MP-GCN** 
 
-## 1) ¿Qué vamos a construir?
+## ¿Qué haremos y por qué?
 
-Un clasificador **single-label por ventana (3–5 s)** que decide entre escenas:
-`Transit`, `Social_People`, `Play_Object_Normal`, `Play_Object_Risk`, `Adult_Assisting`, `Negative_Contact`.
+Clasificar **una etiqueta por escena** en escenas de playground (`Transit`, `Social_People`, `Play_Object_Normal`, `Play_Object_Risk`, `Adult_Assisting`, `Negative_Contact`) usando **esqueletos 2D** y un **grafo panorámico** persona–objeto (**MP-GCN**).
+MP-GCN modela **interacciones**: *intra-persona* (topología del cuerpo), *persona↔objeto* (manos↔columpio/lomas) y *inter-persona* (pelvis↔pelvis). Es **ligero**, **privado** y capta mejor **riesgo/uso del mobiliario** que un modelo por-persona con atención.
 
-**Por qué así:** con esqueletos 2D + nodos de objetos (columpios/lomas) es **ligero**, **privado** y captura **interacciones** (persona↔persona y persona↔objeto) que son justo las que importan para **riesgo** y **uso del equipamiento**.
-
----
-
-## 2) Modelo base: **MP-GCN** (qué es y por qué)
-
-**MP-GCN** representa cada ventana como **grafo espacio-temporal**:
-
-* **Nodos:** joints humanos + **centroides** de objetos del playground (estáticos por cámara).
-* **Aristas:**
-  *Intra* (topología esqueleto), *Persona↔Objeto* (obj↔manos), *Inter-persona* (pelvis↔pelvis).
-* **Cuatro “streams”** de entrada (como el paper): `J` (joints), `B` (bones), `JM=ΔJ`, `BM=ΔB`.
-* **Entrada típica por muestra:** `X ∈ [C, T, V', M]`
-  (`T`=frames, `V'`=17+j\_objetos, `M`=K\_max personas, `C`=canales).
-
-**Ventaja clave:** el grafo **codifica relaciones** (contacto, bloqueo, crowding) *dentro* del backbone, sin heurísticas.
-
-**Referencia oficial:**
-Repo: `https://github.com/mgiant/MP-GCN` (ECCV’24) · Paper: arXiv:2407.19497
+**Repo de referencia:** `https://github.com/mgiant/MP-GCN` (ECCV’24, arXiv:2407.19497)
 
 ---
 
-## 3) Estrategia general (por qué en este orden)
+## Reglas prácticas 
 
-1. **Replicar** en dataset público (Volleyball / NBA; opcional Kinetics-400) → entiendes **feeder** y **streams** sin ruido.
-2. **Preparar nuestro dato** (ROI→ventanas, esqueletos, objetos) → construyes el **input panorámico**.
-3. **Etiquetar simple** (VLM que ya está desplegado **o** curado ligero) → obtienes supervisión inicial.
-4. **Fine-tuning ligero** + **ablation mínima** → demuestras valor del grafo **persona-objeto**.
+* **FPS de proceso:** 12 → **T**≈60 (muestrea a **T=48** para el modelo)
+* **K\_max personas por ventana:** 4
+* **Forma de entrada (feeder estilo ST-GCN/MP-GCN):** `X ∈ [C, T, V', M]`
 
----
-
-## 4) Plan de 10 semanas (resumido y flexible)
-
-**S1 — Intro + setup + “hello world”**
-
-* Leer la idea de MP-GCN (nodos/aristas/streams).
-* Clonar repo y correr **inferencias/entrenamiento corto** en Volleyball/NBA (o preparar K400).
-
-**S2 — Réplica pública con métricas**
-
-* Entreno breve, ver **Top-1** y **matriz de confusión**.
-* Entender shapes del *feeder* (`[C,T,V',M]`).
-
-**S3 — Ventanas (Playground, ROI)**
-
-* 5 s (hop 2.5 s) → `windows.csv` con `video_id,camera,t_start,t_end,blob_url`.
-* Muestra visual de 20 ventanas.
-
-**S4 — Esqueletos + tracking (subset)**
-
-* Pose ligera (YOLO/RTM-pose) + ByteTrack/DeepSORT en **400–800** ventanas.
-* Normalizar por persona (cadera al origen, escala por torso).
-* Guardar **`[T,K_max,17,2]`** (sugerido **T=48**, **K\_max=4**, **FPS=12**).
-
-**S5 — Objetos por cámara (manual, rápido)**
-
-* YAML con **centroides normalizados (0..1)** de columpios/lomas visibles.
-* (Son nodos estáticos; se replican en todos los frames).
-
-**S6 — Builder panorámico (entrada a MP-GCN)**
-
-* Expandir `V → V' = 17 + n_obj`.
-* Añadir aristas: **obj↔manos** (intra), **pelvis↔pelvis** (inter).
-* Generar `J/B/JM/BM` y matrices **A0/A\_intra/A\_inter**.
-* Probar un **forward** con el *feeder* del repo.
-
-**S7 — Etiquetado single-label (rápido)**
-
-* **Opción A (recomendada):** VLM → scores por clase → **argmax**; guardar `conf_weight = score_max` y filtrar CORE-CLEAN (p. ej., score ≥ 0.8).
-* **Opción B:** curado humano ligero (80–120 ventanas por clase clave).
-
-**S8 — Fine-tuning ligero (Playground)**
-
-* Congelar gran parte del backbone; entrenar **cabeza** (+1–2 bloques si hay tiempo).
-* Loss CE con **class-weights**. Métricas iniciales.
-
-**S9 — Ajustes + ablation mínima**
-
-* Comparar: **sin objetos** / **sin inter-persona** / **panorámico completo**.
-* Reportar mejora en `Play_Object_Risk` y `Negative_Contact`.
-
-**S10 — Demo + reporte**
-
-* Streamlit sencillo: video + sticks + nodos + etiqueta y confianza por ventana.
-* Reporte breve: qué funciona y por qué; límites y siguiente paso.
+  * `V' = 17 + n_obj` (joints humanos + **centroides** de objetos por cámara)
+  * **Streams:** `J` (joints), `B` (bones), `JM=ΔJ`, `BM=ΔB`
+  * **Adyacencias:** `A0` (self), `A_intra` (humano + **obj↔manos**), `A_inter` (**pelvis↔pelvis**)
 
 ---
 
-## 5) Parámetros por defecto (para no atascarse)
+## Plan sugerido
 
-* Cámaras: **2** (una de columpios, una de lomas).
-* Ventana: **5 s**, **FPS de proceso = 12** ⇒ `T_raw≈60` → muestrear a **T=48**.
-* `K_max=4`.
-* Clases: 4–6 (las de arriba).
-* Entrenamiento: **head-only** primero.
+### ✅ **Réplica el paper (3 semanas)**
 
----
+**Objetivo:** entender MP-GCN y su *feeder* antes de tocar nuestro dato.
 
-## 6) Entregables mínimos
+* Leer el **paper** (idea del grafo, 4 streams) y el **README** del repo.
+* Clonar repo, crear ambiente e **instalar** dependencias.
+* **Preparar** un dataset público (Volleyball / NBA; opcional **Kinetics-400** vía `pyskl`) como indica el repo.
+* **Entrenar o inferir** con el *config* del repo y **reportar** Top-1/matriz de confusión.
+* **Entender shapes** del *feeder* (`[C,T,V',M]`) e imprimirlos en un notebook.
 
-* **Réplica pública:** notebook + métricas.
-* `windows.csv` (Playground).
-* `.npy/.npz` por ventana (`[T,K_max,17,2]` normalizados).
-* `objects.yaml` (centroides por cámara).
-* **Builder** panorámico (4 streams + A) con *forward* exitoso.
-* `train.csv`/`val.csv` (VLM o curado).
-* Checkpoint + **ablation mínima**.
-* Demo (Streamlit) + reporte corto.
+**Entregables**
+
+* Notebook “hello\_mpgcn.ipynb” (instalación + inferencia/entreno corto + shapes)
 
 ---
 
-## 7) Notas rápidas
+### ✅ Pipeline Playground (3 semanas)**
 
-* El **VLM** sólo se usa para **generar etiquetas** (offline). El modelo final **NO** usa RGB: **sólo esqueletos + objetos**.
-* Si el tracking es ruidoso: baja `K_max` a 3–4 y descarta ventanas con <70% de keypoints válidos.
-* Si falta tiempo para objetos: empieza con **columpios** (asientos) y agrega lomas después.
+**Objetivo:** construir los **inputs panorámicos** a partir de nuestros videos.
 
-> Meta didáctica: entender **por qué** el grafo **persona-objeto** mejora la detección de **riesgo** e **interacción social**, y dejar un pipeline **reproducible** que puedan extender.
+* **Filtrar videos** (ROI) usando el notebook de la base de datos (PostGIS) y **seleccionar ≥100 escenas**:
+  `video_id,camera,t_start,t_end,blob_path`
+
+  > Puedes **prefiltrar** con el **VLM** y/o con el **# de detecciones** de la DB.
+* **Esqueletos + tracking ligero** (YOLO/RTM-pose + ByteTrack/DeepSORT) en esas ventanas; **normalizar** por persona (cadera al origen, escala por torso).
+  Guardar por ventana: **`[T,K_max,17,2]`**.
+* **Objetos por cámara**: anotar manualmente **centroides** (0..1) de columpios/lomas en `configs/objects.yaml`.
+* **Grafo panorámico**:
+
+  * Expandir **`V → V' = 17 + n_obj`** (replicar centroides por frame/persona)
+  * Añadir aristas **obj↔manos** (intra) y **pelvis↔pelvis** (inter)
+  * Generar **`J/B/JM/BM`** y matrices **`A0/A_intra/A_inter`**
+  * **Probar un forward** con el *feeder* del repo (batch pequeño)
+
+**Entregables**
+
+* `data/videos.csv` (≥100 filas)
+* `data/npy/*.npy` o `.npz` por ventana (`[T,K_max,17,2]` normalizados)
+* `configs/objects.yaml` (centroides por cámara)
+* Script/función **`build_panoramic_graph`** y evidencia de **forward OK**
+
+---
+
+### ✅ **Etiquetado, entrenamiento y resultados (4 semanas)**
+
+**Objetivo:** adaptar MP-GCN a playground y mostrar valor del grafo persona–objeto.
+
+* **Etiquetado automático con VLM** → *scores por clase* → **argmax**; guardar `conf_weight = score_max` y aplicar **CORE-CLEAN** (p. ej., `score ≥ 0.8`).
+  *(Si no usan VLM: curado humano ligero de 3–5 clases clave).*
+* **Entrenamiento ligero**: congelar gran parte del backbone y entrenar cabezas/capas.
+
+
+**Entregables**
+
+* `train.csv` / `val.csv` (single-label; si VLM: con `conf_weight`)
+* Checkpoint + **métricas**
+* **Reporte** (2–4 páginas)
+
+---
+
+
+
