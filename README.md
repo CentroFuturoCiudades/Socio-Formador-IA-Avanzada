@@ -1,10 +1,5 @@
-# Socio-Formador-IA-Avanzada
 
-Aquí tienes el **`README.md`** completo en **Markdown** listo para pegar en tu repo 👇
-
----
-
-# Reto: Conductas en Playground con Esqueletos (10 semanas)
+# Reto: Conductas en Playground con Esqueletos 
 
 ## 📌 Descripción
 
